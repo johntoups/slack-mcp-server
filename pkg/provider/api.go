@@ -326,20 +326,23 @@ func (c *MCPSlackClient) GetUnreads(ctx context.Context) ([]UnreadChannel, error
 		}
 
 		// Determine if channel has unreads:
-		// - Channel must be "open" (active/visible in sidebar) OR have a LastRead timestamp
-		// - Latest message must be newer than LastRead
-		// Empty LastRead on non-open channels = dormant, not unread
+		// - For regular channels: unread if Latest > LastRead (or no LastRead = never read)
+		// - For IMs/MPIMs: must be "open" OR have LastRead to not be considered dormant
 		hasLastRead := lastRead != "" && lastRead != "0"
 		hasUnreads := false
 
-		if ch.IsOpen {
-			// Open channels: unread if Latest > LastRead (or no LastRead yet)
+		if ch.IsIM || ch.IsMpim {
+			// DMs and group DMs: only show unreads if open OR previously read
+			// Dormant DMs (never opened, never read) are skipped
+			if ch.IsOpen {
+				hasUnreads = !hasLastRead || latest > lastRead
+			} else if hasLastRead {
+				hasUnreads = latest > lastRead
+			}
+		} else {
+			// Regular channels: unread if Latest > LastRead (or never read)
 			hasUnreads = !hasLastRead || latest > lastRead
-		} else if hasLastRead {
-			// Closed channels with LastRead: unread only if Latest > LastRead
-			hasUnreads = latest > lastRead
 		}
-		// Closed channels without LastRead = dormant, skip
 
 		if hasUnreads {
 			// Build channel name
