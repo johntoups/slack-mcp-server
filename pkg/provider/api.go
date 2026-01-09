@@ -323,9 +323,15 @@ func (c *MCPSlackClient) GetUnreads(ctx context.Context) ([]UnreadChannel, error
 		channelMap[ch.ID] = ch
 	}
 
+	// Build IM ID -> details map from boot.IMs
+	imMap := make(map[string]edge.IM)
+	for _, im := range boot.IMs {
+		imMap[im.ID] = im
+	}
+
 	var unreads []UnreadChannel
 
-	// Process regular channels
+	// Process regular channels (includes MPIMs which are in Channels with IsMpim=true)
 	for _, snapshot := range counts.Channels {
 		if !snapshot.HasUnreads {
 			continue
@@ -336,7 +342,9 @@ func (c *MCPSlackClient) GetUnreads(ctx context.Context) ([]UnreadChannel, error
 		}
 
 		name := ch.Name
-		if name != "" {
+		if ch.IsMpim {
+			name = "@" + ch.NameNormalized
+		} else if name != "" {
 			name = "#" + ch.NameNormalized
 		}
 
@@ -347,25 +355,23 @@ func (c *MCPSlackClient) GetUnreads(ctx context.Context) ([]UnreadChannel, error
 			Latest:      snapshot.Latest.SlackString(),
 			UnreadCount: snapshot.MentionCount,
 			IsIM:        false,
-			IsMpIM:      false,
+			IsMpIM:      ch.IsMpim,
 			IsPrivate:   ch.IsPrivate,
 		})
 	}
 
-	// Process IMs (direct messages)
+	// Process IMs (direct messages) - use imMap for details
 	for _, snapshot := range counts.IMs {
 		if !snapshot.HasUnreads {
 			continue
 		}
-		ch, ok := channelMap[snapshot.ID]
-		if !ok || ch.IsArchived {
+		im, ok := imMap[snapshot.ID]
+		if !ok || im.IsArchived {
 			continue
 		}
 
-		name := "@" + ch.Name
-		if name == "@" && len(ch.Members) > 0 {
-			name = "@" + ch.Members[0]
-		}
+		// IM name is the other user's ID - will be resolved by handler
+		name := "@" + im.User
 
 		unreads = append(unreads, UnreadChannel{
 			ID:          snapshot.ID,
