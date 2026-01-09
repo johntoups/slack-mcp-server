@@ -147,6 +147,19 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger) *MCPServer
 		s.AddTool(conversationsSearchTool, conversationsHandler.ConversationsSearchHandler)
 	}
 
+	s.AddTool(mcp.NewTool("conversations_mark",
+		mcp.WithDescription("Mark a channel or DM as read up to a specific message"),
+		mcp.WithTitleAnnotation("Mark as Read"),
+		mcp.WithDestructiveHintAnnotation(true),
+		mcp.WithString("channel_id",
+			mcp.Required(),
+			mcp.Description("ID of the channel in format Cxxxxxxxxxx or its name starting with #... or @... aka #general or @username_dm."),
+		),
+		mcp.WithString("timestamp",
+			mcp.Description("Message timestamp (format 1234567890.123456) to mark as read up to. If omitted, marks all as read."),
+		),
+	), conversationsHandler.ConversationsMarkHandler)
+
 	channelsHandler := handler.NewChannelsHandler(provider, logger)
 
 	s.AddTool(mcp.NewTool("channels_list",

@@ -79,6 +79,11 @@ type addMessageParams struct {
 	contentType string
 }
 
+type markParams struct {
+	channel string
+	ts      string
+}
+
 type ConversationsHandler struct {
 	apiProvider *provider.ApiProvider
 	logger      *zap.Logger
@@ -341,6 +346,36 @@ func (ch *ConversationsHandler) ConversationsSearchHandler(ctx context.Context, 
 	return marshalMessagesToCSV(messages)
 }
 
+
+// ConversationsMarkHandler marks a channel or DM as read up to a specific message
+func (ch *ConversationsHandler) ConversationsMarkHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	ch.logger.Debug("ConversationsMarkHandler called", zap.Any("params", request.Params))
+
+	params, err := ch.parseParamsToolMark(request)
+	if err != nil {
+		ch.logger.Error("Failed to parse mark params", zap.Error(err))
+		return nil, err
+	}
+
+	ch.logger.Debug("Marking conversation as read",
+		zap.String("channel", params.channel),
+		zap.String("timestamp", params.ts),
+	)
+
+	err = ch.apiProvider.Slack().MarkConversationContext(ctx, params.channel, params.ts)
+	if err != nil {
+		ch.logger.Error("Slack MarkConversationContext failed", zap.Error(err))
+		return nil, err
+	}
+
+	ch.logger.Info("Successfully marked conversation as read",
+		zap.String("channel", params.channel),
+		zap.String("timestamp", params.ts),
+	)
+
+	return mcp.NewToolResultText(fmt.Sprintf("Marked channel %s as read up to timestamp %s", params.channel, params.ts)), nil
+}
+
 func isChannelAllowed(channel string) bool {
 	config := os.Getenv("SLACK_MCP_ADD_MESSAGE_TOOL")
 	if config == "" || config == "true" || config == "1" {
@@ -589,6 +624,58 @@ func (ch *ConversationsHandler) parseParamsToolAddMessage(request mcp.CallToolRe
 		threadTs:    threadTs,
 		text:        msgText,
 		contentType: contentType,
+	}, nil
+}
+
+
+func (ch *ConversationsHandler) parseParamsToolMark(request mcp.CallToolRequest) (*markParams, error) {
+	channel := request.GetString("channel_id", "")
+	if channel == "" {
+		ch.logger.Error("channel_id missing in mark params")
+		return nil, errors.New("channel_id must be a string")
+	}
+
+	// Resolve channel name to ID if needed
+	if strings.HasPrefix(channel, "#") || strings.HasPrefix(channel, "@") {
+		if ready, err := ch.apiProvider.IsReady(); !ready {
+			if errors.Is(err, provider.ErrUsersNotReady) {
+				ch.logger.Warn(
+					"WARNING: Slack users sync is not ready yet, you may experience some limited functionality and see UIDs instead of resolved names as well as unable to query users by their @handles. Users sync is part of channels sync and operations on channels depend on users collection (IM, MPIM). Please wait until users are synced and try again",
+					zap.Error(err),
+				)
+			}
+			if errors.Is(err, provider.ErrChannelsNotReady) {
+				ch.logger.Warn(
+					"WARNING: Slack channels sync is not ready yet, you may experience some limited functionality and be able to request conversation only by Channel ID, not by its name. Please wait until channels are synced and try again.",
+					zap.Error(err),
+				)
+			}
+			return nil, fmt.Errorf("channel %q not found in empty cache", channel)
+		}
+		channelsMaps := ch.apiProvider.ProvideChannelsMaps()
+		chn, ok := channelsMaps.ChannelsInv[channel]
+		if !ok {
+			ch.logger.Error("Channel not found in synced cache", zap.String("channel", channel))
+			return nil, fmt.Errorf("channel %q not found in synced cache. Try to remove old cache file and restart MCP Server", channel)
+		}
+		channel = channelsMaps.Channels[chn].ID
+	}
+
+	ts := request.GetString("timestamp", "")
+	if ts != "" && !strings.Contains(ts, ".") {
+		ch.logger.Error("Invalid timestamp format", zap.String("timestamp", ts))
+		return nil, errors.New("timestamp must be a valid timestamp in format 1234567890.123456")
+	}
+
+	// If no timestamp provided, use current time to mark all as read
+	if ts == "" {
+		ts = fmt.Sprintf("%d.000000", time.Now().Unix())
+		ch.logger.Debug("No timestamp provided, using current time", zap.String("timestamp", ts))
+	}
+
+	return &markParams{
+		channel: channel,
+		ts:      ts,
 	}, nil
 }
 
