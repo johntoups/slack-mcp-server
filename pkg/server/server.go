@@ -160,6 +160,12 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger) *MCPServer
 		),
 	), conversationsHandler.ConversationsMarkHandler)
 
+	s.AddTool(mcp.NewTool("conversations_unreads",
+		mcp.WithDescription("Get list of channels and DMs with unread messages"),
+		mcp.WithTitleAnnotation("List Unreads"),
+		mcp.WithReadOnlyHintAnnotation(true),
+	), conversationsHandler.ConversationsUnreadsHandler)
+
 	channelsHandler := handler.NewChannelsHandler(provider, logger)
 
 	s.AddTool(mcp.NewTool("channels_list",

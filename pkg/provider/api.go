@@ -68,6 +68,18 @@ type Channel struct {
 	Members     []string `json:"members,omitempty"` // Member IDs for the channel
 }
 
+// UnreadChannel represents a channel with unread messages
+type UnreadChannel struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	LastRead    string `json:"last_read"`
+	Latest      string `json:"latest"`
+	UnreadCount int    `json:"unread_count"` // Estimated, may not be exact
+	IsIM        bool   `json:"is_im"`
+	IsMpIM      bool   `json:"is_mpim"`
+	IsPrivate   bool   `json:"is_private"`
+}
+
 type SlackAPI interface {
 	// Standard slack-go API methods
 	AuthTest() (*slack.AuthTestResponse, error)
@@ -87,6 +99,9 @@ type SlackAPI interface {
 
 	// Edge API methods
 	ClientUserBoot(ctx context.Context) (*edge.ClientUserBootResponse, error)
+
+	// Get channels with unread messages
+	GetUnreads(ctx context.Context) ([]UnreadChannel, error)
 }
 
 type MCPSlackClient struct {
@@ -286,6 +301,62 @@ func (c *MCPSlackClient) PostMessageContext(ctx context.Context, channelID strin
 
 func (c *MCPSlackClient) ClientUserBoot(ctx context.Context) (*edge.ClientUserBootResponse, error) {
 	return c.edgeClient.ClientUserBoot(ctx)
+}
+
+func (c *MCPSlackClient) GetUnreads(ctx context.Context) ([]UnreadChannel, error) {
+	boot, err := c.edgeClient.ClientUserBoot(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	var unreads []UnreadChannel
+	for _, ch := range boot.Channels {
+		// Skip archived channels
+		if ch.IsArchived {
+			continue
+		}
+
+		// Compare LastRead vs Latest timestamps
+		// If Latest > LastRead, there are unread messages
+		lastRead := ch.LastRead.SlackString()
+		latest := ch.Latest.SlackString()
+
+		// Skip if no latest message or already read
+		if latest == "" || latest == "0" {
+			continue
+		}
+
+		// If LastRead is empty or less than Latest, channel has unreads
+		hasUnreads := lastRead == "" || lastRead == "0" || latest > lastRead
+
+		if hasUnreads {
+			// Build channel name
+			name := ch.Name
+			if ch.IsIM {
+				name = "@" + ch.Name
+				if name == "@" && len(ch.Members) > 0 {
+					name = "@" + ch.Members[0]
+				}
+			} else if ch.IsMpim {
+				name = "@" + ch.NameNormalized
+			} else if name != "" {
+				name = "#" + ch.NameNormalized
+			}
+
+			unreads = append(unreads, UnreadChannel{
+				ID:          ch.ID,
+				Name:        name,
+				LastRead:    lastRead,
+				Latest:      latest,
+				UnreadCount: 1, // We can't get exact count from boot, just know there are unreads
+				IsIM:        ch.IsIM,
+				IsMpIM:      ch.IsMpim,
+				IsPrivate:   ch.IsPrivate,
+			})
+		}
+	}
+
+	return unreads, nil
 }
 
 func (c *MCPSlackClient) IsEnterprise() bool {

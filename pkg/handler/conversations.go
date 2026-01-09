@@ -376,6 +376,74 @@ func (ch *ConversationsHandler) ConversationsMarkHandler(ctx context.Context, re
 	return mcp.NewToolResultText(fmt.Sprintf("Marked channel %s as read up to timestamp %s", params.channel, params.ts)), nil
 }
 
+// UnreadChannel represents a channel with unread messages for CSV output
+type UnreadChannel struct {
+	ID          string `csv:"ID"`
+	Name        string `csv:"Name"`
+	LastRead    string `csv:"LastRead"`
+	Latest      string `csv:"Latest"`
+	UnreadCount int    `csv:"UnreadCount"`
+	Type        string `csv:"Type"`
+}
+
+// ConversationsUnreadsHandler returns channels with unread messages
+func (ch *ConversationsHandler) ConversationsUnreadsHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	ch.logger.Debug("ConversationsUnreadsHandler called", zap.Any("params", request.Params))
+
+	// Get unreads from the API
+	unreads, err := ch.apiProvider.Slack().GetUnreads(ctx)
+	if err != nil {
+		ch.logger.Error("Failed to get unreads", zap.Error(err))
+		return nil, err
+	}
+
+	ch.logger.Debug("Found unread channels", zap.Int("count", len(unreads)))
+
+	// Resolve user names for DM channels
+	usersMap := ch.apiProvider.ProvideUsersMap()
+
+	// Convert to CSV-friendly format
+	var csvUnreads []UnreadChannel
+	for _, u := range unreads {
+		channelType := "channel"
+		name := u.Name
+
+		if u.IsIM {
+			channelType = "dm"
+			// Try to resolve user name from the channel name or members
+			if strings.HasPrefix(name, "@U") {
+				// This is a user ID, try to resolve it
+				userID := strings.TrimPrefix(name, "@")
+				if user, ok := usersMap.Users[userID]; ok {
+					name = "@" + user.Name
+				}
+			}
+		} else if u.IsMpIM {
+			channelType = "group_dm"
+		} else if u.IsPrivate {
+			channelType = "private_channel"
+		}
+
+		csvUnreads = append(csvUnreads, UnreadChannel{
+			ID:          u.ID,
+			Name:        name,
+			LastRead:    u.LastRead,
+			Latest:      u.Latest,
+			UnreadCount: u.UnreadCount,
+			Type:        channelType,
+		})
+	}
+
+	// Marshal to CSV
+	csvBytes, err := gocsv.MarshalBytes(&csvUnreads)
+	if err != nil {
+		ch.logger.Error("Failed to marshal unreads to CSV", zap.Error(err))
+		return nil, err
+	}
+
+	return mcp.NewToolResultText(string(csvBytes)), nil
+}
+
 func isChannelAllowed(channel string) bool {
 	config := os.Getenv("SLACK_MCP_ADD_MESSAGE_TOOL")
 	if config == "" || config == "true" || config == "1" {
