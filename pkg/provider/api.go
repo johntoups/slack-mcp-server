@@ -317,17 +317,29 @@ func (c *MCPSlackClient) GetUnreads(ctx context.Context) ([]UnreadChannel, error
 		}
 
 		// Compare LastRead vs Latest timestamps
-		// If Latest > LastRead, there are unread messages
 		lastRead := ch.LastRead.SlackString()
 		latest := ch.Latest.SlackString()
 
-		// Skip if no latest message or already read
+		// Skip if no latest message
 		if latest == "" || latest == "0" {
 			continue
 		}
 
-		// If LastRead is empty or less than Latest, channel has unreads
-		hasUnreads := lastRead == "" || lastRead == "0" || latest > lastRead
+		// Determine if channel has unreads:
+		// - Channel must be "open" (active/visible in sidebar) OR have a LastRead timestamp
+		// - Latest message must be newer than LastRead
+		// Empty LastRead on non-open channels = dormant, not unread
+		hasLastRead := lastRead != "" && lastRead != "0"
+		hasUnreads := false
+
+		if ch.IsOpen {
+			// Open channels: unread if Latest > LastRead (or no LastRead yet)
+			hasUnreads = !hasLastRead || latest > lastRead
+		} else if hasLastRead {
+			// Closed channels with LastRead: unread only if Latest > LastRead
+			hasUnreads = latest > lastRead
+		}
+		// Closed channels without LastRead = dormant, skip
 
 		if hasUnreads {
 			// Build channel name
