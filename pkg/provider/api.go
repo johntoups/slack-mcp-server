@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/ioutil"
 	"os"
 	"path/filepath"
@@ -304,71 +305,102 @@ func (c *MCPSlackClient) ClientUserBoot(ctx context.Context) (*edge.ClientUserBo
 }
 
 func (c *MCPSlackClient) GetUnreads(ctx context.Context) ([]UnreadChannel, error) {
+	// Use ClientCounts API which has explicit HasUnreads flag
+	counts, err := c.edgeClient.ClientCounts(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("ClientCounts: %w", err)
+	}
+
+	// Get boot data for channel name resolution
 	boot, err := c.edgeClient.ClientUserBoot(ctx)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("ClientUserBoot: %w", err)
+	}
+
+	// Build channel ID -> details map from boot
+	channelMap := make(map[string]edge.UserBootChannel)
+	for _, ch := range boot.Channels {
+		channelMap[ch.ID] = ch
 	}
 
 	var unreads []UnreadChannel
-	for _, ch := range boot.Channels {
-		// Skip archived channels
-		if ch.IsArchived {
+
+	// Process regular channels
+	for _, snapshot := range counts.Channels {
+		if !snapshot.HasUnreads {
+			continue
+		}
+		ch, ok := channelMap[snapshot.ID]
+		if !ok || ch.IsArchived {
 			continue
 		}
 
-		// Compare LastRead vs Latest timestamps
-		lastRead := ch.LastRead.SlackString()
-		latest := ch.Latest.SlackString()
+		name := ch.Name
+		if name != "" {
+			name = "#" + ch.NameNormalized
+		}
 
-		// Skip if no latest message
-		if latest == "" || latest == "0" {
+		unreads = append(unreads, UnreadChannel{
+			ID:          snapshot.ID,
+			Name:        name,
+			LastRead:    snapshot.LastRead.SlackString(),
+			Latest:      snapshot.Latest.SlackString(),
+			UnreadCount: snapshot.MentionCount,
+			IsIM:        false,
+			IsMpIM:      false,
+			IsPrivate:   ch.IsPrivate,
+		})
+	}
+
+	// Process IMs (direct messages)
+	for _, snapshot := range counts.IMs {
+		if !snapshot.HasUnreads {
+			continue
+		}
+		ch, ok := channelMap[snapshot.ID]
+		if !ok || ch.IsArchived {
 			continue
 		}
 
-		// Determine if channel has unreads:
-		// - For regular channels: unread if Latest > LastRead (or no LastRead = never read)
-		// - For IMs/MPIMs: must be "open" OR have LastRead to not be considered dormant
-		hasLastRead := lastRead != "" && lastRead != "0"
-		hasUnreads := false
-
-		if ch.IsIM || ch.IsMpim {
-			// DMs and group DMs: only show unreads if open OR previously read
-			// Dormant DMs (never opened, never read) are skipped
-			if ch.IsOpen {
-				hasUnreads = !hasLastRead || latest > lastRead
-			} else if hasLastRead {
-				hasUnreads = latest > lastRead
-			}
-		} else {
-			// Regular channels: unread if Latest > LastRead (or never read)
-			hasUnreads = !hasLastRead || latest > lastRead
+		name := "@" + ch.Name
+		if name == "@" && len(ch.Members) > 0 {
+			name = "@" + ch.Members[0]
 		}
 
-		if hasUnreads {
-			// Build channel name
-			name := ch.Name
-			if ch.IsIM {
-				name = "@" + ch.Name
-				if name == "@" && len(ch.Members) > 0 {
-					name = "@" + ch.Members[0]
-				}
-			} else if ch.IsMpim {
-				name = "@" + ch.NameNormalized
-			} else if name != "" {
-				name = "#" + ch.NameNormalized
-			}
+		unreads = append(unreads, UnreadChannel{
+			ID:          snapshot.ID,
+			Name:        name,
+			LastRead:    snapshot.LastRead.SlackString(),
+			Latest:      snapshot.Latest.SlackString(),
+			UnreadCount: snapshot.MentionCount,
+			IsIM:        true,
+			IsMpIM:      false,
+			IsPrivate:   true,
+		})
+	}
 
-			unreads = append(unreads, UnreadChannel{
-				ID:          ch.ID,
-				Name:        name,
-				LastRead:    lastRead,
-				Latest:      latest,
-				UnreadCount: 1, // We can't get exact count from boot, just know there are unreads
-				IsIM:        ch.IsIM,
-				IsMpIM:      ch.IsMpim,
-				IsPrivate:   ch.IsPrivate,
-			})
+	// Process MPIMs (group DMs)
+	for _, snapshot := range counts.MPIMs {
+		if !snapshot.HasUnreads {
+			continue
 		}
+		ch, ok := channelMap[snapshot.ID]
+		if !ok || ch.IsArchived {
+			continue
+		}
+
+		name := "@" + ch.NameNormalized
+
+		unreads = append(unreads, UnreadChannel{
+			ID:          snapshot.ID,
+			Name:        name,
+			LastRead:    snapshot.LastRead.SlackString(),
+			Latest:      snapshot.Latest.SlackString(),
+			UnreadCount: snapshot.MentionCount,
+			IsIM:        false,
+			IsMpIM:      true,
+			IsPrivate:   true,
+		})
 	}
 
 	return unreads, nil
